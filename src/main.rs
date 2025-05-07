@@ -1,4 +1,5 @@
 #![feature(type_alias_impl_trait)]
+#![feature(iter_map_windows)]
 
 use std::{array, env, fmt::Debug, fs, path::PathBuf};
 
@@ -52,10 +53,17 @@ fn main() {
     let mut ngrams: [_; 3] = get_ngrams(&path);
     let reference_ngrams = get_ngrams("eng_wiki_1m");
 
-    unique_ngrams(&ngrams, None, "");
+    unique_ngrams(&ngrams, None, "", false);
+    unique_ngrams(&ngrams, None, " (increase)", true);
     num_per_ngram(&ngrams, None, "");
 
-    unique_ngrams(&ngrams, Some(&reference_ngrams), " (referenced)");
+    unique_ngrams(&ngrams, Some(&reference_ngrams), " (referenced)", false);
+    unique_ngrams(
+        &ngrams,
+        Some(&reference_ngrams),
+        " (referenced + increase)",
+        true,
+    );
     num_per_ngram(&ngrams, Some(&reference_ngrams), " (referenced)");
 
     for (n, ngrams) in ngrams.iter_mut().enumerate() {
@@ -97,13 +105,38 @@ fn unique_ngrams(
     ngrams: &[Vec<(u64, CustomDebugString)>; 3],
     reference: Option<&[Vec<(u64, CustomDebugString)>; 3]>,
     modifiers: &str,
+    increase: bool,
 ) {
-    let max = ngrams
-        .iter()
-        .chain(reference.iter().flat_map(|ngrams| ngrams.iter()))
-        .map(|ngram| ngram.len())
-        .max()
-        .unwrap();
+    let f_increases = |ngrams: &[Vec<(u64, CustomDebugString)>; 3]| {
+        std::iter::once((1, 1))
+            .chain(
+                ngrams
+                    .iter()
+                    .enumerate()
+                    .map_windows(|[(_, last), (n, current)]| (n + 1, current.len() / last.len())),
+            )
+            .collect::<Vec<_>>()
+    };
+
+    let increases = (f_increases(ngrams), reference.map(f_increases));
+
+    let max = if increase {
+        *increases
+            .1
+            .iter()
+            .chain(&[increases.0.clone()])
+            .flatten()
+            .map(|(_, increase)| increase)
+            .max()
+            .unwrap()
+    } else {
+        ngrams
+            .iter()
+            .chain(reference.iter().flat_map(|ngrams| ngrams.iter()))
+            .map(|ngram| ngram.len())
+            .max()
+            .unwrap()
+    };
 
     let path = format!("target/Unique N-Grams{modifiers}.svg");
     // setup plot
@@ -126,22 +159,32 @@ fn unique_ngrams(
         .draw()
         .unwrap();
 
-    for (ngrams, color) in reference
+    for (i, (ngrams, color)) in reference
         .map(|ngrams| (ngrams, BLUE))
         .iter()
         .chain(&[(ngrams, RED)])
+        .enumerate()
     {
+        let color = color.mix(if reference.is_some() { 0.7 } else { 1. });
+
         chart
             .draw_series(
                 Histogram::vertical(&chart)
                     .style(color.filled())
                     .margin(10)
-                    .data(
+                    .data(if increase {
+                        if reference.is_some() && i == 0 {
+                            increases.1.clone().unwrap()
+                        } else {
+                            increases.0.clone()
+                        }
+                    } else {
                         ngrams
                             .iter()
                             .enumerate()
-                            .map(|(n, ngram)| (n + 1, ngram.len())),
-                    ),
+                            .map(|(n, ngram)| (n + 1, ngram.len()))
+                            .collect()
+                    }),
             )
             .unwrap();
     }
