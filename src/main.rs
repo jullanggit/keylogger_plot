@@ -20,6 +20,7 @@ impl Debug for CustomDebugString {
             .replace("\u{9}", "\\t")
             .replace("\u{1B}", "\\e")
             .replace("\u{7F}", "\\d");
+        println!("{}", cleaned.escape_default());
         write!(f, "{}", cleaned.escape_default())
     }
 }
