@@ -48,8 +48,7 @@ impl Debug for CustomDebugString {
 
 fn main() {
     // get n-grams
-    let home = env::var("HOME").unwrap();
-    let path = format!("{home}/ngrams");
+    let path = format!("ngrams");
     let mut ngrams: [_; 3] = get_ngrams(&path);
     let reference_ngrams = get_ngrams("eng_wiki_1m");
 
