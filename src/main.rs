@@ -1,3 +1,5 @@
+#![feature(type_alias_impl_trait)]
+
 use std::{array, env, fmt::Debug, fs, path::PathBuf};
 
 use plotters::{
@@ -5,7 +7,7 @@ use plotters::{
     prelude::{IntoDrawingArea, IntoSegmentedCoord, SVGBackend},
     series::Histogram,
     style::{
-        Color, ShapeStyle,
+        Color,
         full_palette::{BLUE, RED, WHITE},
     },
 };
@@ -46,30 +48,15 @@ impl Debug for CustomDebugString {
 fn main() {
     // get n-grams
     let home = env::var("HOME").unwrap();
-    let mut ngrams: [_; 3] = array::from_fn(|n| {
-        let file = PathBuf::from(format!("{home}/ngrams/{}-grams.txt", n + 1));
-        let contents = fs::read_to_string(file).unwrap();
-        let mut ngrams = contents
-            .split('\n')
-            .filter(|line| !line.is_empty())
-            .map(|entry| entry.split_once(' ').unwrap())
-            .map(|(number, entry)| {
-                (
-                    number.parse::<u32>().unwrap(),
-                    CustomDebugString::cleaned(entry),
-                )
-            })
-            .collect::<Vec<_>>();
+    let path = format!("{home}/ngrams");
+    let mut ngrams: [_; 3] = get_ngrams(&path);
+    let reference_ngrams = get_ngrams("eng_wiki_1m");
 
-        ngrams.sort_by(|(num1, _), (num2, _)| num1.cmp(num2).reverse());
-        ngrams
-    });
+    unique_ngrams(&ngrams, None, "");
+    num_per_ngram(&ngrams, None, "");
 
-    let keylogger_style = RED.mix(0.5).filled();
-    let reference_style = BLUE.mix(0.5).filled();
-
-    unique_ngrams(&ngrams, "", keylogger_style);
-    num_per_ngram(&ngrams, "", keylogger_style);
+    unique_ngrams(&ngrams, Some(&reference_ngrams), " (referenced)");
+    num_per_ngram(&ngrams, Some(&reference_ngrams), " (referenced)");
 
     for (n, ngrams) in ngrams.iter_mut().enumerate() {
         let len = match n {
@@ -81,16 +68,42 @@ fn main() {
         ngrams.truncate(len);
     }
 
-    unique_ngrams(&ngrams, " (filtered)", keylogger_style);
-    num_per_ngram(&ngrams, " (filtered)", keylogger_style);
+    num_per_ngram(&ngrams, None, " (filtered)");
+    num_per_ngram(&ngrams, Some(&reference_ngrams), " (filtered + referenced)");
+}
+
+fn get_ngrams(path: &str) -> [Vec<(u64, CustomDebugString)>; 3] {
+    array::from_fn(|n| {
+        let file = PathBuf::from(format!("{path}/{}-grams.txt", n + 1));
+        let contents = fs::read_to_string(file).unwrap();
+        let mut ngrams = contents
+            .lines()
+            .filter(|line| !line.is_empty())
+            .flat_map(|entry| entry.split_once(' '))
+            .flat_map(|(number, entry)| {
+                Some((
+                    number.parse::<u64>().ok()?,
+                    CustomDebugString::cleaned(entry),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        ngrams.sort_by(|(num1, _), (num2, _)| num1.cmp(num2).reverse());
+        ngrams
+    })
 }
 
 fn unique_ngrams(
-    ngrams: &[Vec<(u32, CustomDebugString)>; 3],
+    ngrams: &[Vec<(u64, CustomDebugString)>; 3],
+    reference: Option<&[Vec<(u64, CustomDebugString)>; 3]>,
     modifiers: &str,
-    style: impl Into<ShapeStyle> + Clone,
 ) {
-    let max = ngrams.iter().map(|ngram| ngram.len()).max().unwrap();
+    let max = ngrams
+        .iter()
+        .chain(reference.iter().flat_map(|ngrams| ngrams.iter()))
+        .map(|ngram| ngram.len())
+        .max()
+        .unwrap();
 
     let path = format!("target/Unique N-Grams{modifiers}.svg");
     // setup plot
@@ -113,30 +126,39 @@ fn unique_ngrams(
         .draw()
         .unwrap();
 
-    chart
-        .draw_series(
-            Histogram::vertical(&chart)
-                .style(RED.filled())
-                .margin(10)
-                .data(
-                    ngrams
-                        .iter()
-                        .enumerate()
-                        .map(|(n, ngram)| (n + 1, ngram.len())),
-                ),
-        )
-        .unwrap();
+    for (ngrams, color) in reference
+        .map(|ngrams| (ngrams, BLUE))
+        .iter()
+        .chain(&[(ngrams, RED)])
+    {
+        chart
+            .draw_series(
+                Histogram::vertical(&chart)
+                    .style(color.filled())
+                    .margin(10)
+                    .data(
+                        ngrams
+                            .iter()
+                            .enumerate()
+                            .map(|(n, ngram)| (n + 1, ngram.len())),
+                    ),
+            )
+            .unwrap();
+    }
 
     root.present().unwrap();
 }
 
 fn num_per_ngram(
-    ngrams: &[Vec<(u32, CustomDebugString)>; 3],
+    ngrams: &[Vec<(u64, CustomDebugString)>; 3],
+    reference: Option<&[Vec<(u64, CustomDebugString)>; 3]>,
     modifiers: &str,
-    style: impl Into<ShapeStyle> + Clone,
 ) {
     for n in 0..ngrams.len() {
-        let max = ngrams[n].iter().map(|(num, _)| num).max().unwrap();
+        let f_max = |ngrams: &[Vec<(u64, CustomDebugString)>; 3]| {
+            *ngrams[n].iter().map(|(num, _)| num).max().unwrap()
+        };
+        let maxes = (f_max(ngrams), reference.map(f_max));
 
         let path = format!("target/{}-grams{modifiers}.svg", n + 1);
 
@@ -155,7 +177,7 @@ fn num_per_ngram(
             .x_label_area_size(40)
             .y_label_area_size(60)
             .margin(1)
-            .build_cartesian_2d(segmented_coord, 0..(max + max / 10))
+            .build_cartesian_2d(segmented_coord, 0..(maxes.0 + maxes.0 / 20))
             .unwrap();
 
         chart
@@ -168,19 +190,35 @@ fn num_per_ngram(
             .draw()
             .unwrap();
 
-        chart
-            .draw_series(
-                Histogram::vertical(&chart)
-                    .style(style.clone())
-                    .margin(0)
-                    .data(
-                        ngrams[n]
-                            .iter()
-                            .filter(|(_, ngram)| ngram.0 != "�")
-                            .map(|(num, ngram)| (ngram, *num)),
-                    ),
-            )
-            .unwrap();
+        for (i, (ngrams, color)) in reference
+            .map(|ngrams| (ngrams, BLUE))
+            .iter()
+            .chain(&[(ngrams, RED)])
+            .enumerate()
+        {
+            let color = color.mix(if reference.is_some() { 0.7 } else { 1. });
+
+            // scale down reference so the maxes match
+            let div = if reference.is_some() && i == 0 {
+                maxes.1.unwrap() / maxes.0
+            } else {
+                1
+            };
+
+            chart
+                .draw_series(
+                    Histogram::vertical(&chart)
+                        .style(color.filled())
+                        .margin(0)
+                        .data(
+                            ngrams[n]
+                                .iter()
+                                .filter(|(_, ngram)| ngram.0 != "�")
+                                .map(|(num, ngram)| (ngram, *num / div)),
+                        ),
+                )
+                .unwrap();
+        }
 
         root.present().unwrap();
     }
